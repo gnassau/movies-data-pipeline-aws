@@ -1,5 +1,4 @@
-def run_update_movies():
-
+def run_get_movie_details():
     import os
     import json
     import requests

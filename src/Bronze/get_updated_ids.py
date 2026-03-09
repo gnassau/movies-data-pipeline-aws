@@ -1,5 +1,4 @@
-def run_incremental_ids():
-
+def run_get_updated_ids():
     import os
     import requests
     import json

@@ -86,7 +86,7 @@ def run_full_load():
 
         total_pages = data.get("total_pages", 1)
 
-        if page >= total_pages or page >= 500:
+        if page >= total_pages or page >= 500 or page == 2:
             break
 
         page += 1
