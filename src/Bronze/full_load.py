@@ -1,9 +1,9 @@
-def run_full_load():
+def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
 
     import os
     import requests
     import json
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
     import boto3
     from dotenv import load_dotenv
 
@@ -26,14 +26,36 @@ def run_full_load():
 
     s3 = boto3.client("s3")
 
-    start_date = "2025-06-01"
-    end_date = datetime.now().date()
-
     now = datetime.now(timezone.utc)
+
+    # =============================
+    # DEFINE DATE RANGE
+    # =============================
+    if mode == "full_refresh":
+
+        start_date = start_date or datetime(2026, 3, 1).date()
+        end_date = end_date or datetime.now().date()
+
+        print("RUNNING FULL REFRESH")
+
+    elif mode == "incremental_refresh":
+
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=1)
+
+        print("RUNNING INCREMENTAL REFRESH")
+
+    else:
+        raise ValueError("mode deve ser full_refresh ou incremental_refresh")
+
+    print(f"Collecting from {start_date} to {end_date}")
 
     movies_data = []
     page = 1
 
+    # =============================
+    # DISCOVER MOVIES
+    # =============================
     while True:
 
         params = {
@@ -86,12 +108,17 @@ def run_full_load():
 
         total_pages = data.get("total_pages", 1)
 
-        if page >= total_pages or page >= 500 or page == 2:
+        # segurança contra loops gigantes
+        if page >= total_pages or page >= 500:
             break
 
         page += 1
 
     print(f"Total de filmes coletados: {len(movies_data)}")
+
+    # =============================
+    # S3 WRITE (APPEND ONLY)
+    # =============================
 
     year = now.strftime("%Y")
     month = now.strftime("%m")
