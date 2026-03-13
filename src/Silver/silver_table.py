@@ -5,9 +5,9 @@ def run_silver_table():
     import boto3
     import json
     import io
-    from datetime import datetime
     import pyarrow as pa
     import pyarrow.parquet as pq
+    from datetime import datetime
     from collections import defaultdict
 
     BUCKET_NAME = "movies-raw-gustavo-portfolio"
@@ -15,13 +15,34 @@ def run_silver_table():
     s3 = boto3.client("s3")
 
     # =============================
+    # LISTAR TODOS OS ARQUIVOS JSON
+    # =============================
+
+    def list_json_files(prefix):
+
+        paginator = s3.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=BUCKET_NAME, Prefix=prefix)
+
+        keys = []
+
+        for page in pages:
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+
+                if key.endswith(".json"):
+                    keys.append(key)
+
+        return keys
+
+
+    # =============================
     # LER JSON LINES
     # =============================
 
     def read_json_from_key(key):
 
-        response = s3.get_object(Bucket=BUCKET_NAME, Key=key)
-        body = response["Body"].read().decode("utf-8")
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
+        body = obj["Body"].read().decode("utf-8")
 
         data = []
 
@@ -32,64 +53,28 @@ def run_silver_table():
 
 
     # =============================
-    # PEGAR ARQUIVO MAIS RECENTE
+    # LER TODOS OS DADOS DA BRONZE
     # =============================
 
-    def get_latest_file(prefix):
+    print("Lendo bronze full load")
 
-        paginator = s3.get_paginator("list_objects_v2")
-        pages = paginator.paginate(Bucket=BUCKET_NAME, Prefix=prefix)
+    movies_keys = list_json_files("bronze/movies/")
+    updates_keys = list_json_files("bronze/movies_updates/")
 
-        latest_obj = None
+    all_movies = []
 
-        for page in pages:
-            for obj in page.get("Contents", []):
+    for key in movies_keys:
+        print("Lendo:", key)
+        all_movies.extend(read_json_from_key(key))
 
-                key = obj["Key"]
+    for key in updates_keys:
+        print("Lendo:", key)
+        all_movies.extend(read_json_from_key(key))
 
-                if not key.endswith(".json"):
-                    continue
-
-                if latest_obj is None or obj["LastModified"] > latest_obj["LastModified"]:
-                    latest_obj = obj
-
-        if latest_obj is None:
-            return None
-
-        return latest_obj["Key"]
-
+    print("Total registros bronze:", len(all_movies))
 
     # =============================
-    # LER PARTIÇÃO MAIS RECENTE
-    # =============================
-
-    latest_movies_key = get_latest_file("bronze/movies/")
-    latest_updates_key = get_latest_file("bronze/movies_updates/")
-
-    movies = []
-    updates = []
-
-    if latest_movies_key:
-        print("LENDO MOVIES:", latest_movies_key)
-        movies = read_json_from_key(latest_movies_key)
-
-    if latest_updates_key:
-        print("LENDO UPDATES:", latest_updates_key)
-        updates = read_json_from_key(latest_updates_key)
-
-    print("Filmes da camada Bronze:", len(movies))
-    print("Filmes atualizados:", len(updates))
-
-    # =============================
-    # JUNTAR DADOS
-    # =============================
-
-    all_movies = movies + updates
-
-    print("Total registros:", len(all_movies))
-
-    # =============================
-    # DEDUPLICAÇÃO
+    # DEDUP POR MOVIE_ID + TIMESTAMP
     # =============================
 
     latest_movies = {}
@@ -97,12 +82,22 @@ def run_silver_table():
     for movie in all_movies:
 
         movie_id = movie["movie_id"]
+        ts = movie["ingestion_timestamp"]
 
-        latest_movies[movie_id] = movie
+        if movie_id not in latest_movies:
+
+            latest_movies[movie_id] = movie
+
+        else:
+
+            current_ts = latest_movies[movie_id]["ingestion_timestamp"]
+
+            if ts > current_ts:
+                latest_movies[movie_id] = movie
 
     silver_movies = list(latest_movies.values())
 
-    print("Filmes após deduplicar:", len(silver_movies))
+    print("Após deduplicação:", len(silver_movies))
 
     # =============================
     # LIMPEZA
@@ -114,7 +109,7 @@ def run_silver_table():
     ]
 
     # =============================
-    # AGRUPAR POR ANO
+    # AGRUPAR POR ANO (PARTIÇÃO)
     # =============================
 
     movies_by_year = defaultdict(list)
@@ -122,9 +117,13 @@ def run_silver_table():
     for movie in silver_movies:
 
         try:
+
             year = movie["release_date"][:4]
+
             movie["year"] = year
+
             movies_by_year[year].append(movie)
+
         except:
             continue
 
@@ -149,12 +148,12 @@ def run_silver_table():
     ])
 
     # =============================
-    # SALVAR POR PARTIÇÃO
+    # UPSERT NAS PARTIÇÕES
     # =============================
 
     for year, movies_list in movies_by_year.items():
 
-        print(f"Salvando ano {year} - {len(movies_list)} filmes")
+        print(f"Salvando partição year={year} ({len(movies_list)} filmes)")
 
         table = pa.Table.from_pylist(
             movies_list,
@@ -179,7 +178,7 @@ def run_silver_table():
             Body=buffer.getvalue()
         )
 
-        print("Silver salva em:", s3_key)
+        print("Partição atualizada:", s3_key)
 
 
 if __name__ == "__main__":

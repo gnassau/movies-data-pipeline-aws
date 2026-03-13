@@ -6,14 +6,11 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
     from datetime import datetime, timezone, timedelta
     import boto3
     from airflow.models import Variable
-    from dotenv import load_dotenv
 
     # =============================
     # LOAD ENV
     # =============================
-    load_dotenv()
 
-    # API_KEY = os.getenv("TMDB_API_KEY")
     API_KEY = Variable.get("TMDB_API_KEY")
 
     if not API_KEY:
@@ -35,8 +32,9 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
     # =============================
     if mode == "full_refresh":
 
-        start_date = start_date or datetime(2026, 3, 1).date()
-        end_date = end_date or datetime.now().date()
+        if not start_date and not end_date:
+            start_date = start_date or datetime(2026, 3, 1).date()
+            end_date = end_date or datetime.now().date()
 
         print("RUNNING FULL REFRESH")
 
@@ -111,7 +109,7 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
         total_pages = data.get("total_pages", 1)
 
         # segurança contra loops gigantes
-        if page >= total_pages or page >= 500:
+        if page >= total_pages or page >= 2:
             break
 
         page += 1

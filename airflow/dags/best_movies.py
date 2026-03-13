@@ -1,3 +1,5 @@
+from multiprocessing import context
+
 from airflow.providers.amazon.aws.operators.athena import AthenaOperator
 from airflow import DAG
 from datetime import datetime
@@ -64,8 +66,19 @@ with DAG(
             )
 
         @task
-        def get_updated_ids():
-            run_get_updated_ids()
+        def get_updated_ids(**context):
+            params = context["params"]
+
+            load_type = params["load_type"]
+            start_date = params["start_date"]
+            end_date = params["end_date"]
+            print(f"Load type: {load_type}")
+            print(f"Start date: {start_date}")
+            print(f"End date: {end_date}")
+
+            run_get_updated_ids(mode=load_type, 
+                                start_date=start_date,
+                                 end_date=end_date)
 
         @task
         def get_movie_details():
