@@ -4,7 +4,11 @@ def run_silver_table():
 
     import boto3
     import json
+    import io
     from datetime import datetime
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from collections import defaultdict
 
     BUCKET_NAME = "movies-raw-gustavo-portfolio"
 
@@ -56,7 +60,7 @@ def run_silver_table():
 
 
     # =============================
-    # LER APENAS PARTIÇÃO MAIS RECENTE
+    # LER PARTIÇÃO MAIS RECENTE
     # =============================
 
     latest_movies_key = get_latest_file("bronze/movies/")
@@ -75,7 +79,6 @@ def run_silver_table():
 
     print("Filmes da camada Bronze:", len(movies))
     print("Filmes atualizados:", len(updates))
-
 
     # =============================
     # JUNTAR DADOS
@@ -97,14 +100,12 @@ def run_silver_table():
 
         latest_movies[movie_id] = movie
 
-
     silver_movies = list(latest_movies.values())
 
     print("Filmes após deduplicar:", len(silver_movies))
 
-
     # =============================
-    # LIMPEZA de release_date vazio
+    # LIMPEZA
     # =============================
 
     silver_movies = [
@@ -112,31 +113,73 @@ def run_silver_table():
         if m.get("release_date")
     ]
 
-
     # =============================
-    # CONVERTER PARA JSON LINES
-    # =============================
-
-    json_lines = "\n".join(json.dumps(m) for m in silver_movies)
-
-
-    # =============================
-    # SALVAR SILVER
+    # AGRUPAR POR ANO
     # =============================
 
-    now = datetime.now()
-    date_folder = now.strftime("%Y-%m-%d")
+    movies_by_year = defaultdict(list)
 
-    s3_key = f"silver/movies/movies.json"
+    for movie in silver_movies:
 
-    s3.put_object(
-        Bucket=BUCKET_NAME,
-        Key=s3_key,
-        Body=json_lines,
-        ContentType="application/json"
-    )
+        try:
+            year = movie["release_date"][:4]
+            movie["year"] = year
+            movies_by_year[year].append(movie)
+        except:
+            continue
 
-    print("Silver salva em:", s3_key)
+
+    # =============================
+    # SCHEMA
+    # =============================
+
+    schema = pa.schema([
+        ("movie_id", pa.int64()),
+        ("title", pa.string()),
+        ("release_date", pa.string()),
+        ("budget", pa.int64()),
+        ("revenue", pa.int64()),
+        ("runtime", pa.int64()),
+        ("popularity", pa.float64()),
+        ("vote_average", pa.float64()),
+        ("vote_count", pa.int64()),
+        ("language", pa.string()),
+        ("status", pa.string()),
+        ("ingestion_timestamp", pa.string())
+    ])
+
+    # =============================
+    # SALVAR POR PARTIÇÃO
+    # =============================
+
+    for year, movies_list in movies_by_year.items():
+
+        print(f"Salvando ano {year} - {len(movies_list)} filmes")
+
+        table = pa.Table.from_pylist(
+            movies_list,
+            schema=schema
+        )
+
+        buffer = io.BytesIO()
+
+        pq.write_table(
+            table,
+            buffer,
+            compression="snappy"
+        )
+
+        buffer.seek(0)
+
+        s3_key = f"silver/movies/year={year}/movies.parquet"
+
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=s3_key,
+            Body=buffer.getvalue()
+        )
+
+        print("Silver salva em:", s3_key)
 
 
 if __name__ == "__main__":

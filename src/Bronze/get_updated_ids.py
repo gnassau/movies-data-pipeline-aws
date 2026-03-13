@@ -4,11 +4,13 @@ def run_get_updated_ids():
     import json
     from datetime import datetime, timezone
     import boto3
+    from airflow.models import Variable
     from dotenv import load_dotenv
 
     load_dotenv()
 
-    API_KEY = os.getenv("TMDB_API_KEY")
+    # API_KEY = os.getenv("TMDB_API_KEY")
+    API_KEY = Variable.get("TMDB_API_KEY") or os.getenv("TMDB_API_KEY")
 
     if not API_KEY:
         raise ValueError("TMDB_API_KEY não encontrada")
@@ -37,7 +39,7 @@ def run_get_updated_ids():
     month = now.strftime("%m")
     day = now.strftime("%d")
 
-    s3_key = f"bronze/updated_movie_ids/{year}-{month}-{day}/ids.json"
+    s3_key = f"bronze/updated_movie_ids/{year}/{month}/{day}/ids.json"
 
     json_lines = "\n".join(json.dumps(movie) for movie in movie_ids)
 
@@ -48,4 +50,8 @@ def run_get_updated_ids():
         ContentType="application/json"
     )
 
+    print(f"IDs atualizados coletados: {len(movie_ids)}")
     print(f"IDs atualizados enviados para: {s3_key}")
+
+if __name__ == "__main__":
+    run_get_updated_ids()

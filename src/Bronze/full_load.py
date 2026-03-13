@@ -5,6 +5,7 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
     import json
     from datetime import datetime, timezone, timedelta
     import boto3
+    from airflow.models import Variable
     from dotenv import load_dotenv
 
     # =============================
@@ -12,7 +13,8 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
     # =============================
     load_dotenv()
 
-    API_KEY = os.getenv("TMDB_API_KEY")
+    # API_KEY = os.getenv("TMDB_API_KEY")
+    API_KEY = Variable.get("TMDB_API_KEY")
 
     if not API_KEY:
         raise ValueError("TMDB_API_KEY não encontrada")
@@ -124,7 +126,8 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
     month = now.strftime("%m")
     day = now.strftime("%d")
 
-    s3_key = f"bronze/movies/{year}-{month}-{day}/movies.json"
+    # s3_key = f"bronze/movies/{year}-{month}-{day}/movies.json"
+    s3_key = f"bronze/movies/{year}/{month}/{day}/movies.json"
 
     json_lines = "\n".join(json.dumps(movie) for movie in movies_data)
 
@@ -136,3 +139,6 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
     )
 
     print(f"Arquivo enviado para S3 em: {s3_key}")
+
+if __name__ == "__main__":
+    run_ingestion()

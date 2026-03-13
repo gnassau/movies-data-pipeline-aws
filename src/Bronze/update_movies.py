@@ -99,11 +99,15 @@ def run_get_movie_details():
     month = now.strftime("%m")
     day = now.strftime("%d")
 
-    s3_key = (
-        f"bronze/movies_updates/"
-        f"{year}-{month}-{day}/"
-        f"movies_updates.json"
-    )
+    # s3_key = (
+    #     f"bronze/movies_updates/"
+    #     f"{year}-{month}-{day}/"
+    #     f"movies_updates.json"
+    # )
+
+    s3_key = f"bronze/movies_updates/{year}/{month}/{day}/movies_updates.json"
+
+    print(f"Salvando em S3 com partições: ano={year}, mês={month}, dia={day}")
 
     json_lines = "\n".join(json.dumps(movie) for movie in movies_data)
 
@@ -115,3 +119,6 @@ def run_get_movie_details():
     )
 
     print(f"Arquivo enviado para S3: {s3_key}")
+
+if __name__ == "__main__":
+    run_get_movie_details()
