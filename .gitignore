@@ -36,3 +36,6 @@ Thumbs.db
 .aws/
 *.pem
 !requirements.txt
+
+#Backup Files
+Backup/

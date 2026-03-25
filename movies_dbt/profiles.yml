@@ -1,0 +1,30 @@
+movies_dbt:
+  target: postgres_target
+  outputs:
+    dev:
+      type: postgres
+      host: localhost
+      user: admin
+      password: admin
+      port: 5433
+      dbname: movies
+      schema: analytics
+      threads: 4
+
+    athena_source:
+      type: athena
+      region_name: us-east-1
+      database: movies_silver
+      schema: silver
+      s3_staging_dir: s3://athena_results/
+      threads: 4
+
+    postgres_target:
+      type: postgres
+      host: postgres_analytics
+      user: admin
+      password: admin
+      port: 5432
+      dbname: movies         # 👈 POSTGRES_DB
+      schema: gold
+      threads: 4

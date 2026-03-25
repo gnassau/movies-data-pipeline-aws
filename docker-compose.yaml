@@ -2,6 +2,7 @@
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
 # regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
 # "License"); you may not use this file except in compliance
 # with the License.  You may obtain a copy of the License at
 #
@@ -48,8 +49,8 @@ x-airflow-common:
   # In order to add custom dependencies or upgrade provider packages you can use your extended image.
   # Comment the image line, place your Dockerfile in the directory where you placed the docker-compose.yaml
   # and uncomment the "build" line below, Then run `docker-compose build` to build the images.
-  image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.9.1}
-  # build: .
+  # image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.9.1}
+  build: .
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -57,11 +58,11 @@ x-airflow-common:
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
     AIRFLOW__CORE__FERNET_KEY: ''
-    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: '5'
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     PYTHONPATH: /opt/airflow
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: '5'
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks
     # See https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server
@@ -80,9 +81,9 @@ x-airflow-common:
     - ./airflow/plugins:/opt/airflow/plugins
     - ./src:/opt/airflow/src
     - ~/.aws:/home/airflow/.aws
+    - ./movies_dbt:/opt/airflow/movies_dbt
+    - ./movies_dbt:/opt/***/movies_dbt
   user: "${AIRFLOW_UID:-50000}:0"
-  env_file:
-  - .env
   depends_on:
     &airflow-common-depends-on
     redis:
@@ -105,6 +106,18 @@ services:
       retries: 5
       start_period: 5s
     restart: always
+
+  # 🔵 Banco do seu projeto (dbt)
+  postgres_analytics:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: movies   # 👈 já cria automaticamente
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-analytics-volume:/var/lib/postgresql/data
 
   redis:
     # Redis is limited to 7.2-bookworm due to licencing change
@@ -291,3 +304,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  postgres-analytics-volume:
