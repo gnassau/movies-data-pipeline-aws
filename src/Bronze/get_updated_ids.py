@@ -2,7 +2,7 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
 
     import requests
     import json
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timezone, timedelta, date
     import boto3
     from airflow.models import Variable
 
@@ -23,8 +23,22 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
     BASE_URL = "https://api.themoviedb.org/3/movie/changes"
 
     s3 = boto3.client("s3")
-
     now = datetime.now(timezone.utc)
+
+    MAX_RANGE_DAYS = 10  # limite seguro do TMDB
+
+    # =============================
+    # FUNÇÃO AUXILIAR
+    # =============================
+
+    def parse_date(d):
+        if isinstance(d, str):
+            return datetime.strptime(d, "%Y-%m-%d").date()
+        if isinstance(d, datetime):
+            return d.date()
+        if isinstance(d, date):
+            return d
+        raise ValueError(f"Formato de data inválido: {d}")
 
     # =============================
     # DEFINE DATE RANGE
@@ -33,7 +47,7 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
     if mode == "full_refresh":
 
         if not start_date or not end_date:
-            start_date = start_date or datetime(2026, 3, 1).date()
+            start_date = start_date or datetime(2020, 1, 1).date()
             end_date = end_date or datetime.now().date()
 
         print("RUNNING FULL REFRESH")
@@ -48,50 +62,74 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
     else:
         raise ValueError("mode deve ser full_refresh ou incremental_refresh")
 
+    # 🔥 CORREÇÃO: garantir tipo correto
+    start_date = parse_date(start_date)
+    end_date = parse_date(end_date)
+
     print(f"Collecting updates from {start_date} to {end_date}")
 
     # =============================
-    # PAGINAÇÃO DA API
+    # LOOP DE DATAS (BATCH)
     # =============================
 
-    page = 1
     movie_ids = []
+    seen_ids = set()  # evita duplicados
 
-    while True:
+    current_start = start_date
 
-        params = {
-            "api_key": API_KEY,
-            "start_date": start_date,
-            "end_date": end_date,
-            "page": page
-        }
+    while current_start <= end_date:
 
-        response = requests.get(BASE_URL, params=params)
-        response.raise_for_status()
+        current_end = min(current_start + timedelta(days=MAX_RANGE_DAYS), end_date)
 
-        data = response.json()
-        results = data.get("results", [])
+        print(f"\nPROCESSING RANGE: {current_start} -> {current_end}")
 
-        print(f"PAGE {page} - IDS {len(results)}")
+        page = 1
 
-        if not results:
-            break
+        while True:
 
-        for movie in results:
+            params = {
+                "api_key": API_KEY,
+                "start_date": current_start.strftime("%Y-%m-%d"),
+                "end_date": current_end.strftime("%Y-%m-%d"),
+                "page": page
+            }
 
-            movie_ids.append({
-                "movie_id": movie["id"],
-                "ingestion_timestamp": now.strftime("%Y-%m-%d %H:%M:%S")
-            })
+            response = requests.get(BASE_URL, params=params)
 
-        total_pages = data.get("total_pages", 1)
+            if response.status_code != 200:
+                print(f"Erro na API: {response.text}")
+                response.raise_for_status()
 
-        if page >= total_pages:
-            break
+            data = response.json()
+            results = data.get("results", [])
 
-        page += 1
+            print(f"RANGE {current_start}->{current_end} | PAGE {page} | IDS {len(results)}")
 
-    print(f"Total de IDs coletados: {len(movie_ids)}")
+            if not results:
+                break
+
+            for movie in results:
+                movie_id = movie["id"]
+
+                # 🔥 evita duplicados
+                if movie_id not in seen_ids:
+                    seen_ids.add(movie_id)
+                    movie_ids.append({
+                        "movie_id": movie_id,
+                        "ingestion_timestamp": now.strftime("%Y-%m-%d %H:%M:%S")
+                    })
+
+            total_pages = data.get("total_pages", 1)
+
+            if page >= total_pages:
+                break
+
+            page += 1
+
+        # avança o range
+        current_start = current_end + timedelta(days=1)
+
+    print(f"\nTotal de IDs únicos coletados: {len(movie_ids)}")
 
     # =============================
     # SALVAR NO S3

@@ -1,10 +1,11 @@
 def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
-    
+
     import requests
     import json
     from datetime import datetime, timezone, timedelta, date
     import boto3
     from airflow.models import Variable
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # =============================
     # LOAD ENV
@@ -23,12 +24,14 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
     BASE_DISCOVER_URL = "https://api.themoviedb.org/3/discover/movie"
     BASE_MOVIE_URL = "https://api.themoviedb.org/3/movie"
 
-    s3 = boto3.client("s3")
+    MAX_PAGES = 500
+    MAX_WORKERS = 10
 
+    s3 = boto3.client("s3")
     now = datetime.now(timezone.utc)
 
     # =============================
-    # 🔥 NORMALIZE DATES (FIX PRINCIPAL)
+    # NORMALIZE DATES
     # =============================
 
     def parse_to_date(d):
@@ -44,7 +47,7 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
     end_date = parse_to_date(end_date)
 
     # =============================
-    # DEFINE DATE RANGE
+    # DEFINE MODE
     # =============================
 
     if mode == "full_refresh":
@@ -64,48 +67,40 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
 
         print("RUNNING INCREMENTAL REFRESH")
 
+    elif mode == "period_refresh":
+
+        if not start_date or not end_date:
+            raise ValueError("period_refresh exige start_date e end_date")
+
+        print("RUNNING PERIOD REFRESH")
+
     else:
-        raise ValueError("mode deve ser full_refresh ou incremental_refresh")
+        raise ValueError("mode deve ser full_refresh, incremental_refresh ou period_refresh")
 
     print(f"Collecting from {start_date} to {end_date}")
 
-    movies_data = []
-
     # =============================
-    # DEFINE BATCHES
+    # FETCH MOVIE DETAIL (PARALLEL)
     # =============================
 
-    if mode == "full_refresh":
+    def fetch_movie_detail(movie_id):
 
-        years = range(start_date.year, end_date.year + 1)
-
-        batches = []
-
-        for year in years:
-
-            batch_start = date(year, 1, 1)
-            batch_end = date(year, 12, 31)
-
-            if year == start_date.year:
-                batch_start = start_date
-
-            if year == end_date.year:
-                batch_end = end_date
-
-            batches.append((batch_start, batch_end))
-
-    else:
-
-        batches = [(start_date, end_date)]
+        response = requests.get(
+            f"{BASE_MOVIE_URL}/{movie_id}",
+            params={
+                "api_key": API_KEY
+            }
+        )
+        response.raise_for_status()
+        return response.json()
 
     # =============================
-    # DISCOVER MOVIES
+    # CORE LOGIC (SMART BATCH)
     # =============================
 
-    for batch_start, batch_end in batches:
+    def fetch_batch(batch_start, batch_end):
 
-        print(f"Processing batch {batch_start} -> {batch_end}")
-
+        all_movies = []
         page = 1
 
         while True:
@@ -120,50 +115,69 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
 
             response = requests.get(BASE_DISCOVER_URL, params=params)
             response.raise_for_status()
-
             data = response.json()
+
+            total_pages = data.get("total_pages", 1)
+
+            # 🔥 SPLIT AUTOMÁTICO (CRÍTICO)
+            if total_pages > MAX_PAGES:
+
+                print(f"SPLITTING: {batch_start} -> {batch_end} ({total_pages} pages)")
+
+                mid_date = batch_start + (batch_end - batch_start) / 2
+                mid_date = mid_date
+
+                left = fetch_batch(batch_start, mid_date)
+                right = fetch_batch(mid_date + timedelta(days=1), batch_end)
+
+                return left + right
+
             results = data.get("results", [])
 
-            print(f"BATCH {batch_start} PAGE {page} - MOVIES {len(results)}")
+            print(f"BATCH {batch_start} -> {batch_end} | PAGE {page}/{total_pages} | {len(results)} movies")
 
             if not results:
                 break
 
-            for movie in results:
+            movie_ids = [m["id"] for m in results]
 
-                movie_id = movie["id"]
+            # 🚀 PARALLEL REQUESTS
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
-                movie_response = requests.get(
-                    f"{BASE_MOVIE_URL}/{movie_id}",
-                    params={"api_key": API_KEY}
-                )
+                futures = [executor.submit(fetch_movie_detail, mid) for mid in movie_ids]
 
-                movie_response.raise_for_status()
-                movie_detail = movie_response.json()
+                for future in as_completed(futures):
+                    movie_detail = future.result()
 
-                movie_record = {
-                    "movie_id": movie_detail.get("id"),
-                    "title": movie_detail.get("title"),
-                    "release_date": movie_detail.get("release_date"),
-                    "budget": movie_detail.get("budget"),
-                    "revenue": movie_detail.get("revenue"),
-                    "runtime": movie_detail.get("runtime"),
-                    "popularity": movie_detail.get("popularity"),
-                    "vote_average": movie_detail.get("vote_average"),
-                    "vote_count": movie_detail.get("vote_count"),
-                    "language": movie_detail.get("original_language"),
-                    "status": movie_detail.get("status"),
-                    "ingestion_timestamp": now.strftime("%Y-%m-%d %H:%M:%S")
-                }
+                    movie_record = {
+                        "movie_id": movie_detail.get("id"),
+                        "title": movie_detail.get("title"),
+                        "release_date": movie_detail.get("release_date"),
+                        "budget": movie_detail.get("budget"),
+                        "revenue": movie_detail.get("revenue"),
+                        "runtime": movie_detail.get("runtime"),
+                        "popularity": movie_detail.get("popularity"),
+                        "vote_average": movie_detail.get("vote_average"),
+                        "vote_count": movie_detail.get("vote_count"),
+                        "language": movie_detail.get("original_language"),
+                        "status": movie_detail.get("status"),
+                        "ingestion_timestamp": now.strftime("%Y-%m-%d %H:%M:%S")
+                    }
 
-                movies_data.append(movie_record)
-
-            total_pages = data.get("total_pages", 1)
+                    all_movies.append(movie_record)
 
             if page >= total_pages:
                 break
 
             page += 1
+
+        return all_movies
+
+    # =============================
+    # EXECUTION
+    # =============================
+
+    movies_data = fetch_batch(start_date, end_date)
 
     print(f"Total de filmes coletados: {len(movies_data)}")
 
