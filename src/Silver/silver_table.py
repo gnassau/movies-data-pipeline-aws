@@ -144,7 +144,12 @@ def run_silver_table():
         ("vote_count", pa.int64()),
         ("language", pa.string()),
         ("status", pa.string()),
-        ("ingestion_timestamp", pa.string())
+        ("ingestion_timestamp", pa.string()),
+        ("overview", pa.string()),
+        ("original_language", pa.string()),
+        ("adult", pa.bool_()),
+        ("homepage", pa.string()),
+        ("genres", pa.list_(pa.string()))
     ])
 
     # =============================

@@ -209,7 +209,12 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
                         "vote_count": movie_detail.get("vote_count"),
                         "language": movie_detail.get("original_language"),
                         "status": movie_detail.get("status"),
-                        "ingestion_timestamp": now.strftime("%Y-%m-%d %H:%M:%S")
+                        "ingestion_timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                        "overview": movie_detail.get("overview"),
+                        "original_language": movie_detail.get("original_language"),
+                        "adult": movie_detail.get("adult"),
+                        "homepage": movie_detail.get("homepage"),
+                        "genres": [g.get("name") for g in movie_detail.get("genres", []) if g.get("name")]
                     }
 
                     # 🔥 escreve incremental
