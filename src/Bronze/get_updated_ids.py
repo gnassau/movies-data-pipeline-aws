@@ -22,10 +22,11 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
     BUCKET_NAME = "movies-raw-gustavo-portfolio"
     BASE_URL = "https://api.themoviedb.org/3/movie/changes"
 
+    MAX_RANGE_DAYS = 10  # limite da API
+    MIN_DATE = date(2012, 10, 5)  # 🔥 LIMITE DA API
+
     s3 = boto3.client("s3")
     now = datetime.now(timezone.utc)
-
-    MAX_RANGE_DAYS = 10  # limite seguro do TMDB
 
     # =============================
     # FUNÇÃO AUXILIAR
@@ -46,9 +47,8 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
 
     if mode == "full_refresh":
 
-        if not start_date or not end_date:
-            start_date = start_date or datetime(2020, 1, 1).date()
-            end_date = end_date or datetime.now().date()
+        start_date = start_date or date(2020, 1, 1)
+        end_date = end_date or datetime.now().date()
 
         print("RUNNING FULL REFRESH")
 
@@ -62,18 +62,31 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
     else:
         raise ValueError("mode deve ser full_refresh ou incremental_refresh")
 
-    # 🔥 CORREÇÃO: garantir tipo correto
+    # normaliza
     start_date = parse_date(start_date)
     end_date = parse_date(end_date)
 
     print(f"Collecting updates from {start_date} to {end_date}")
 
     # =============================
+    # 🔥 PROTEÇÃO CONTRA ERRO DA API
+    # =============================
+
+    if start_date < MIN_DATE:
+
+        if end_date < MIN_DATE:
+            print("⚠️ Intervalo inteiro antes de 2012-10-05. Nada para coletar. Encerrando.")
+            return
+
+        print(f"⚠️ Ajustando start_date de {start_date} para {MIN_DATE}")
+        start_date = MIN_DATE
+
+    # =============================
     # LOOP DE DATAS (BATCH)
     # =============================
 
     movie_ids = []
-    seen_ids = set()  # evita duplicados
+    seen_ids = set()
 
     current_start = start_date
 
@@ -94,13 +107,19 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
                 "page": page
             }
 
-            response = requests.get(BASE_URL, params=params)
+            try:
+                response = requests.get(BASE_URL, params=params)
 
-            if response.status_code != 200:
-                print(f"Erro na API: {response.text}")
-                response.raise_for_status()
+                if response.status_code != 200:
+                    print(f"❌ Erro na API: {response.text}")
+                    response.raise_for_status()
 
-            data = response.json()
+                data = response.json()
+
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Erro na requisição: {e}")
+                break  # não quebra o job inteiro
+
             results = data.get("results", [])
 
             print(f"RANGE {current_start}->{current_end} | PAGE {page} | IDS {len(results)}")
@@ -111,7 +130,6 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
             for movie in results:
                 movie_id = movie["id"]
 
-                # 🔥 evita duplicados
                 if movie_id not in seen_ids:
                     seen_ids.add(movie_id)
                     movie_ids.append({
@@ -126,7 +144,6 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
 
             page += 1
 
-        # avança o range
         current_start = current_end + timedelta(days=1)
 
     print(f"\nTotal de IDs únicos coletados: {len(movie_ids)}")
@@ -134,6 +151,10 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
     # =============================
     # SALVAR NO S3
     # =============================
+
+    if not movie_ids:
+        print("⚠️ Nenhum ID encontrado. Nada será salvo.")
+        return
 
     year = now.strftime("%Y")
     month = now.strftime("%m")
@@ -150,7 +171,7 @@ def run_get_updated_ids(mode="incremental_refresh", start_date=None, end_date=No
         ContentType="application/json"
     )
 
-    print(f"Arquivo enviado para S3 em: {s3_key}")
+    print(f"✅ Arquivo enviado para S3: {s3_key}")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,10 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
     MAX_PAGES = 500
     MAX_WORKERS = 10
 
+    # 🔥 FLUSH CONFIG
+    MAX_RECORDS = 1000
+    MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+
     s3 = boto3.client("s3")
     now = datetime.now(timezone.utc)
 
@@ -75,32 +79,77 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
         print("RUNNING PERIOD REFRESH")
 
     else:
-        raise ValueError("mode deve ser full_refresh, incremental_refresh ou period_refresh")
+        raise ValueError("mode inválido")
 
     print(f"Collecting from {start_date} to {end_date}")
 
     # =============================
-    # FETCH MOVIE DETAIL (PARALLEL)
+    # S3 BUFFER CONTROL
+    # =============================
+
+    year = now.strftime("%Y")
+    month = now.strftime("%m")
+    day = now.strftime("%d")
+
+    buffer = []
+    buffer_size_bytes = 0
+    file_counter = 1
+
+    def flush_to_s3():
+        nonlocal buffer, buffer_size_bytes, file_counter
+
+        if not buffer:
+            return
+
+        s3_key = f"bronze/movies/year={year}/month={month}/day={day}/part_{file_counter:05d}.json"
+
+        json_lines = "\n".join(buffer)
+
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=s3_key,
+            Body=json_lines,
+            ContentType="application/json"
+        )
+
+        print(f"✅ Uploaded: {s3_key} | records={len(buffer)} | size={buffer_size_bytes/1024/1024:.2f} MB")
+
+        buffer = []
+        buffer_size_bytes = 0
+        file_counter += 1
+
+    def add_to_buffer(movie_dict):
+        nonlocal buffer, buffer_size_bytes
+
+        line = json.dumps(movie_dict)
+        line_size = len(line.encode("utf-8"))
+
+        buffer.append(line)
+        buffer_size_bytes += line_size
+
+        # 🔥 condição de flush
+        if len(buffer) >= MAX_RECORDS or buffer_size_bytes >= MAX_FILE_SIZE:
+            flush_to_s3()
+
+    # =============================
+    # FETCH MOVIE DETAIL
     # =============================
 
     def fetch_movie_detail(movie_id):
 
         response = requests.get(
             f"{BASE_MOVIE_URL}/{movie_id}",
-            params={
-                "api_key": API_KEY
-            }
+            params={"api_key": API_KEY}
         )
         response.raise_for_status()
         return response.json()
 
     # =============================
-    # CORE LOGIC (SMART BATCH)
+    # CORE LOGIC (STREAMING)
     # =============================
 
     def fetch_batch(batch_start, batch_end):
 
-        all_movies = []
         page = 1
 
         while True:
@@ -119,29 +168,28 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
 
             total_pages = data.get("total_pages", 1)
 
-            # 🔥 SPLIT AUTOMÁTICO (CRÍTICO)
+            # 🔥 SPLIT automático
             if total_pages > MAX_PAGES:
 
-                print(f"SPLITTING: {batch_start} -> {batch_end} ({total_pages} pages)")
+                print(f"⚠️ SPLITTING: {batch_start} -> {batch_end} ({total_pages} pages)")
 
                 mid_date = batch_start + (batch_end - batch_start) / 2
-                mid_date = mid_date
 
-                left = fetch_batch(batch_start, mid_date)
-                right = fetch_batch(mid_date + timedelta(days=1), batch_end)
+                fetch_batch(batch_start, mid_date)
+                fetch_batch(mid_date + timedelta(days=1), batch_end)
 
-                return left + right
+                return
 
             results = data.get("results", [])
 
-            print(f"BATCH {batch_start} -> {batch_end} | PAGE {page}/{total_pages} | {len(results)} movies")
+            print(f"BATCH {batch_start}->{batch_end} | PAGE {page}/{total_pages} | {len(results)} movies")
 
             if not results:
                 break
 
             movie_ids = [m["id"] for m in results]
 
-            # 🚀 PARALLEL REQUESTS
+            # 🚀 paralelo
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
                 futures = [executor.submit(fetch_movie_detail, mid) for mid in movie_ids]
@@ -164,43 +212,24 @@ def run_ingestion(mode="incremental_refresh", start_date=None, end_date=None):
                         "ingestion_timestamp": now.strftime("%Y-%m-%d %H:%M:%S")
                     }
 
-                    all_movies.append(movie_record)
+                    # 🔥 escreve incremental
+                    add_to_buffer(movie_record)
 
             if page >= total_pages:
                 break
 
             page += 1
 
-        return all_movies
-
     # =============================
     # EXECUTION
     # =============================
 
-    movies_data = fetch_batch(start_date, end_date)
+    fetch_batch(start_date, end_date)
 
-    print(f"Total de filmes coletados: {len(movies_data)}")
+    # flush final
+    flush_to_s3()
 
-    # =============================
-    # S3 WRITE
-    # =============================
-
-    year = now.strftime("%Y")
-    month = now.strftime("%m")
-    day = now.strftime("%d")
-
-    s3_key = f"bronze/movies/{year}/{month}/{day}/movies.json"
-
-    json_lines = "\n".join(json.dumps(movie) for movie in movies_data)
-
-    s3.put_object(
-        Bucket=BUCKET_NAME,
-        Key=s3_key,
-        Body=json_lines,
-        ContentType="application/json"
-    )
-
-    print(f"Arquivo enviado para S3 em: {s3_key}")
+    print("🏁 Ingestion finalizada com sucesso")
 
 
 if __name__ == "__main__":
